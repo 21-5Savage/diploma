@@ -1,2 +1,5 @@
 *.venv
-dataset
+/dataset
+*.db
+*.sql
+*.csv
