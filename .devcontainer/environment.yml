@@ -1,0 +1,7 @@
+# Include only packages necessary in development environment
+name: vscode
+channels:
+  - defaults
+dependencies:
+  - ipykernel
+  - pip

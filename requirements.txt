@@ -5,3 +5,5 @@ yahoo-finance
 yfinance
 bs4
 lxml
+scikit-learn
+plotly

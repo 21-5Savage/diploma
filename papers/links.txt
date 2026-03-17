@@ -1,1 +1,6 @@
 neural network implementations https://www.geeksforgeeks.org/numpy/implementation-of-neural-network-from-scratch-using-numpy/
+
+
+https://www.researchgate.net/publication/378435618_Stock_price_prediction_using_decision_tree_classifier_and_LSTM_network
+
+

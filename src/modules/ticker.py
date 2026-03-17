@@ -4,6 +4,7 @@ import yfinance as yf
 import requests
 from bs4 import BeautifulSoup
 import time
+from io import StringIO
 
 # -----------------------------
 # STEP 1: Get S&P 1500 Universe
@@ -36,12 +37,16 @@ def get_sp1500_tickers():
         raise RuntimeError(f"Failed to fetch {title}; last status {resp.status_code}")
 
     def extract_symbols(html: str) -> list[str]:
-        tables = pd.read_html(html)
+        # Parse HTML content from memory (not as a file path).
+        tables = pd.read_html(StringIO(html))
         for table in tables:
-            cols = [str(c).strip() for c in table.columns]
-            if "Symbol" in cols:
-                return table["Symbol"].tolist()
-        raise ValueError("No table with a Symbol column found")
+            symbol_col = next(
+                (c for c in table.columns if "symbol" in str(c).strip().lower()),
+                None,
+            )
+            if symbol_col is not None:
+                return table[symbol_col].astype(str).str.strip().tolist()
+        raise ValueError("No table with a symbol column found")
 
     for title in page_titles:
         html = fetch_html(title)
@@ -131,5 +136,3 @@ def stratified_sample(df, n=1000):
         result = pd.concat([result, extra])
     
     return result.head(n)
-
-
