@@ -19,7 +19,7 @@ class Config:
     table_name: str = "prices"
     test_size: float = 0.2
     model_input_path: str = "artifacts/xgb_model.pkl"
-    predictions_output_path: str = "artifacts/xgboost_test_predictions.csv"
+    predictions_output_path: str = "results/xgboost_test_predictions.csv"
 
 
 def load_prices_from_sqlite(db_path: str, table_name: str) -> pd.DataFrame:
@@ -172,15 +172,32 @@ def main():
     y_pred = model.predict(X_test)
 
     metrics = regression_metrics(y_test, y_pred)
-    result = f"""RMSE={metrics['rmse']:.6f}\n\n
-        MAE={metrics['mae']:.6f}\n
-        R2={metrics['r2']:.6f}\n
-        DA={metrics['directional_accuracy']:.4f}\n"""
+    result = f"""\nreal Results:
+RMSE={metrics['rmse']:.6f}
+MAE={metrics['mae']:.6f}
+R2={metrics['r2']:.6f}
+DA={metrics['directional_accuracy']:.4f}"""
 
-    print("\nResults:")
     print(result)
-    
-    with open(f"{cfg.predictions_output_path}.txt", "x") as file:
+
+
+    #baseline
+    y_pred_baseline = np.zeros_like(y_test)
+    baseline_metrics = regression_metrics(y_test, y_pred_baseline)
+    np.random.seed(42)
+    y_pred_rand = np.random.choice([-1, 1], size=len(y_test))
+
+    baseline_dir = np.mean(np.sign(y_test) == y_pred_rand)
+    baseline = f"""\nbaseline Results:
+RMSE={baseline_metrics['rmse']:.6f}
+MAE={baseline_metrics['mae']:.6f}
+R2={baseline_metrics['r2']:.6f}
+DirAcc={baseline_dir:.4f}"""
+    print("\nBaseline (predict 0)")
+    print(baseline)
+
+    with open(f"{cfg.predictions_output_path}.txt", "w") as file:
+        file.write(result)
         file.write(result)
 
     os.makedirs(os.path.dirname(cfg.predictions_output_path), exist_ok=True)

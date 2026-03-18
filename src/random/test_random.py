@@ -2,7 +2,7 @@
 Random baseline for next-day direction guessing.
 
 Run:
-    python -m src.random.test_random
+    python -m src.models.zrandom.test_random
 """
 
 import sqlite3

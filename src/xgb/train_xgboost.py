@@ -1,5 +1,5 @@
 """
-python -m src.models.xgb.train_xgboost
+python -m src.xgb.train_xgboost
 """
 
 import os
@@ -30,13 +30,15 @@ class Config:
     def __post_init__(self):
         if self.xgb_params is None:
             self.xgb_params = {
-                "n_estimators": 200,
+                "n_estimators": 600,
                 "max_depth": 4,
-                "learning_rate": 0.05,
-                "subsample": 0.8,
-                "colsample_bytree": 0.8,
-                "reg_alpha": 0.0,
-                "reg_lambda": 1.0,
+                "learning_rate": 0.03,
+                "subsample": 0.7,
+                "colsample_bytree": 0.7,
+                "reg_alpha": 0.5,
+                "reg_lambda": 2.0,
+                "min_child_weight": 5,
+                "gamma": 0.1,
                 "objective": "reg:squarederror",
                 "random_state": self.random_state,
                 "n_jobs": 2,
@@ -309,5 +311,5 @@ def main():
 if __name__ == "__main__":
     main()
 """
-python -m src.models.xgb.train_xgboost
+python -m src.xgb.train_xgboost
 """
