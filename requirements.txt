@@ -1,0 +1,13 @@
+opencv-python
+numpy
+pandas
+yahoo-finance
+yfinance
+bs4
+lxml
+scikit-learn
+plotly
+xgboost
+nbformat
+tensorflow
+google-genai

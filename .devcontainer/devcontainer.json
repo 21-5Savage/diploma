@@ -9,8 +9,8 @@
   // Use these if you want to protect the dev server from a single container eating everything.
   // Adjust values per project/team policy.
   "runArgs": [
-    "--cpus=2",
-    "--memory=8g",
+    "--cpus=4",
+    "--memory=12g",
     "--network=host"
   ],
   //this port will be where your program will be able exposed on. change as needed
