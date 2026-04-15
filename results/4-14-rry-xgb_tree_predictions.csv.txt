@@ -1,0 +1,8 @@
+XGBoost Decision Tree Results (target=return):
+RMSE=0.023866
+MAE=0.015611
+R2=-0.002111
+DA=0.5085
+
+CV Mean R2=0.009443
+CV Mean DA=0.5084

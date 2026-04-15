@@ -1,0 +1,7 @@
+# Run the stock prediction pipeline every trading day at 18:00 UTC
+# (after US market closes at ~21:00 UTC; 18:00 catches Asian / early-US data)
+# Min  Hour  Dom  Month  Dow
+0      18    *    *      1-5  root cd /app && python -m pipeline.run_pipeline >> /app/logs/pipeline.log 2>&1
+
+# Also run evaluation of yesterday's predictions at 09:00 UTC each day
+0      9     *    *      1-5  root cd /app && python -m pipeline.evaluate >> /app/logs/evaluate.log 2>&1

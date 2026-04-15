@@ -1,0 +1,47 @@
+Loading data...
+Subsampled to 300 tickers
+Computing features...
+Splitting train/test...
+Train rows: 997,066 | Test rows: 249,585
+Train (no-NaN): 937,366 | Test (no-NaN): 249,285
+
+Building CV folds...
+CV folds: 5
+
+=== Fold 1/5 ===
+  Train: 155,820 | Val: 156,173
+[0]	validation_0-rmse:0.02694
+[100]	validation_0-rmse:0.02690
+[103]	validation_0-rmse:0.02690
+  Fold 1 | RMSE=0.026888 MAE=0.017205 R2=0.002015 DA=0.4767
+
+=== Fold 2/5 ===
+  Train: 311,993 | Val: 156,365
+[0]	validation_0-rmse:0.02204
+[100]	validation_0-rmse:0.02190
+[200]	validation_0-rmse:0.02190
+[203]	validation_0-rmse:0.02190
+  Fold 2 | RMSE=0.021899 MAE=0.013246 R2=0.012695 DA=0.5124
+
+=== Fold 3/5 ===
+  Train: 468,358 | Val: 156,151
+[0]	validation_0-rmse:0.02242
+[100]	validation_0-rmse:0.02240
+[148]	validation_0-rmse:0.02240
+  Fold 3 | RMSE=0.022397 MAE=0.014182 R2=0.002272 DA=0.5121
+
+=== Fold 4/5 ===
+  Train: 624,509 | Val: 156,158
+[0]	validation_0-rmse:0.02742
+[100]	validation_0-rmse:0.02741
+[140]	validation_0-rmse:0.02741
+  Fold 4 | RMSE=0.027407 MAE=0.014232 R2=0.000658 DA=0.5197
+
+=== Fold 5/5 ===
+  Train: 780,667 | Val: 156,399
+[0]	validation_0-rmse:0.02980
+[100]	validation_0-rmse:0.02956
+[200]	validation_0-rmse:0.02948
+[300]	validation_0-rmse:0.02945
+[400]	validation_0-rmse:0.02942
+[500]	validation_0-rmse:0.02940

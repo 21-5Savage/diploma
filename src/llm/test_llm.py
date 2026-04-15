@@ -10,13 +10,15 @@ consecutive time window, always predicting out-of-sample.
 
 Usage:
     export GEMINI_API_KEY="your_key_here"
-    python -m src.llm.train_llm
+    python -m src.llm.test_llm
 
-    # Or pass specific tickers:
-    python -m src.llm.train_llm --tickers AAPL MSFT GOOGL
+    # Predict the 61st day close from the previous 60 trading days,
+    # making 10 Gemini calls per ticker:
+    python -m src.llm.test_llm --tickers AAPL --context_days 60 --n_eval 10
 """
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -46,13 +48,13 @@ class Config:
     db_path: str = "dataset/stock_prices_20y.db"
     table_name: str = "prices"
 
-    model_name: str = "gemini-2.5-flash-preview-04-17"
+    model_name: str = "gemini-2.5-flash"
 
     # How many past trading days to include in the prompt
-    context_days: int = 20
+    context_days: int = 60
 
     # Number of test samples per ticker (walk-forward)
-    n_eval_per_ticker: int = 30
+    n_eval_per_ticker: int = 10
 
     # Number of tickers to evaluate
     max_tickers: int = 20
@@ -145,12 +147,34 @@ def call_gemini(client: genai.Client, model_name: str, prompt: str, cfg: Config)
                     max_output_tokens=32,
                 ),
             )
-            text = response.text.strip()
-            match = re.search(r"[\d]+\.?[\d]*", text)
-            if match:
-                val = float(match.group())
+
+            text = (getattr(response, "text", None) or "").strip()
+
+            if not text:
+                # Some responses don't populate .text directly; fall back to a
+                # string form so we can still attempt numeric extraction.
+                text = str(response).strip()
+
+            if not text:
+                return None
+
+            cleaned = text.replace(",", "").replace("$", "")
+
+            # Prefer plain numeric replies, but fall back to the last positive
+            # float if Gemini includes extra formatting or explanation.
+            candidates = re.findall(r"(?<!\w)(\d+(?:\.\d+)?)(?!\w)", cleaned)
+            if candidates:
+                val = float(candidates[-1])
                 if val > 0:
                     return val
+
+            try:
+                literal_val = ast.literal_eval(cleaned)
+                if isinstance(literal_val, (int, float)) and literal_val > 0:
+                    return float(literal_val)
+            except (SyntaxError, ValueError):
+                pass
+
             return None
         except Exception as e:
             if attempt < cfg.max_retries - 1:
@@ -196,6 +220,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--tickers", nargs="+", default=None)
     parser.add_argument("--n_eval", type=int, default=None)
     parser.add_argument("--max_tickers", type=int, default=None)
+    parser.add_argument("--context_days", type=int, default=None)
+    parser.add_argument("--n_splits", type=int, default=None)
+    parser.add_argument("--request_delay", type=float, default=None)
     return parser.parse_args()
 
 
@@ -207,6 +234,12 @@ def main():
         cfg.n_eval_per_ticker = args.n_eval
     if args.max_tickers is not None:
         cfg.max_tickers = args.max_tickers
+    if args.context_days is not None:
+        cfg.context_days = args.context_days
+    if args.n_splits is not None:
+        cfg.n_splits = args.n_splits
+    if args.request_delay is not None:
+        cfg.request_delay = args.request_delay
 
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -217,6 +250,11 @@ def main():
 
     client = genai.Client(api_key=api_key)
     print(f"Using model: {cfg.model_name}")
+    print(
+        f"Configuration: context_days={cfg.context_days}, "
+        f"n_eval={cfg.n_eval_per_ticker}, n_splits={cfg.n_splits}, "
+        f"request_delay={cfg.request_delay}"
+    )
 
     print("Loading price data...")
     raw_df = load_prices_from_sqlite(cfg.db_path, cfg.table_name, tickers=args.tickers)

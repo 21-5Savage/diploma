@@ -9,8 +9,8 @@
   // Use these if you want to protect the dev server from a single container eating everything.
   // Adjust values per project/team policy.
   "runArgs": [
-    "--cpus=4",
-    "--memory=12g",
+    "--cpus=8",
+    "--memory=48g",
     "--network=host"
   ],
   //this port will be where your program will be able exposed on. change as needed
@@ -81,6 +81,6 @@
     }
   },
   // Runs after the container is created (first time) / rebuilt (depending on VS Code behavior)
-  "postCreateCommand": "umask 0002 && conda env update -n vscode -f environment.yml"
+  "postCreateCommand": "umask 0002 && conda env update -n vscode -f .devcontainer/environment.yml"
   // "postCreateCommand": "pip3 --disable-pip-version-check --no-cache-dir install -r requirements.txt",
 }

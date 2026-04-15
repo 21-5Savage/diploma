@@ -17,3 +17,6 @@ dependencies:
       - xgboost
       - nbformat
       - tensorflow
+      - torch
+      - prophet
+      - google-genai

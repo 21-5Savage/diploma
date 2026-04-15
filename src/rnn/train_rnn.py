@@ -37,37 +37,40 @@ class Config:
     db_path: str = "dataset/stock_prices_20y.db"
     table_name: str = "prices"
 
-    n_splits: int = 3
+    n_splits: int = 5
     test_size: float = 0.2
     target_horizon: int = 1
-    predict_target: str = "price"
+    predict_target: str = "return"  # log(close_{t+1}/close_t)
     random_state: int = 42
 
-    sequence_length: int = 10
-    batch_size: int = 1024
-    epochs: int = 15
-    patience: int = 3
+    sequence_length: int = 30
+    batch_size: int = 2048
+    epochs: int = 60
+    patience: int = 10
 
-    rnn_units: int = 32
-    num_layers: int = 1
-    dense_units: int = 16
-    dropout: float = 0.2
-    learning_rate: float = 1e-3
+    rnn_units: int = 128
+    num_layers: int = 2
+    dense_units: int = 64
+    dropout: float = 0.3
+    learning_rate: float = 5e-4
+    weight_decay: float = 1e-4
 
     model_output_path: str = f"artifacts/{month}-{day}-{tag}-rnn_torch.pkl"
     config_output_path: str = f"artifacts/{month}-{day}-{tag}-rnn_torch_config.json"
 
-    max_tickers: int = 100  # Subsample tickers for CPU speed
+    max_tickers: int = 0  # 0 = use all tickers
 
     feature_cols: tuple = (
-        "ret_1",
-        "ret_5",
-        "hl_range",
-        "oc_change",
-        "close_vs_ma_5",
-        "close_vs_ma_10",
-        "vol_chg_1",
-        "vol_vs_ma_5",
+        "log_ret_1", "log_ret_3", "log_ret_5", "log_ret_10", "log_ret_20",
+        "hl_range", "oc_change",
+        "close_vs_ma_5", "close_vs_ma_10", "close_vs_ma_20", "close_vs_ma_50",
+        "ma_5_vs_ma_20",
+        "rolling_vol_5", "rolling_vol_20",
+        "log_vol_chg_1", "vol_vs_ma_5", "vol_vs_ma_20",
+        "rsi_14",
+        "macd_norm",
+        "bb_pos",
+        "atr_14_norm",
     )
 
 
@@ -99,20 +102,51 @@ def make_sequence_features(df: pd.DataFrame) -> pd.DataFrame:
     out = []
     for _, g in df.groupby("ticker", sort=False):
         g = g.sort_values("date").copy()
-        close = g["close"]
-        volume = g["volume"]
-        ma_5 = close.rolling(5).mean()
-        ma_10 = close.rolling(10).mean()
-        vol_ma_5 = volume.rolling(5).mean()
-        g["ret_1"] = close.pct_change(1)
-        g["ret_5"] = close.pct_change(5)
-        g["hl_range"] = (g["high"] - g["low"]) / close
-        g["oc_change"] = (g["close"] - g["open"]) / g["open"]
-        g["close_vs_ma_5"] = close / ma_5 - 1.0
-        g["close_vs_ma_10"] = close / ma_10 - 1.0
+        close = g["close"].astype("float64")
+        high = g["high"].astype("float64")
+        low = g["low"].astype("float64")
+        open_ = g["open"].astype("float64")
+        volume = g["volume"].astype("float64").clip(lower=1.0)
+        log_close = np.log(close)
+        g["log_ret_1"] = log_close.diff(1)
+        g["log_ret_3"] = log_close.diff(3)
+        g["log_ret_5"] = log_close.diff(5)
+        g["log_ret_10"] = log_close.diff(10)
+        g["log_ret_20"] = log_close.diff(20)
+        g["hl_range"] = (high - low) / close
+        g["oc_change"] = (close - open_) / open_.clip(lower=1e-6)
+        ma5 = close.rolling(5).mean()
+        ma10 = close.rolling(10).mean()
+        ma20 = close.rolling(20).mean()
+        ma50 = close.rolling(50).mean()
+        g["close_vs_ma_5"] = close / ma5.clip(lower=1e-6) - 1.0
+        g["close_vs_ma_10"] = close / ma10.clip(lower=1e-6) - 1.0
+        g["close_vs_ma_20"] = close / ma20.clip(lower=1e-6) - 1.0
+        g["close_vs_ma_50"] = close / ma50.clip(lower=1e-6) - 1.0
+        g["ma_5_vs_ma_20"] = ma5 / ma20.clip(lower=1e-6) - 1.0
+        g["rolling_vol_5"] = g["log_ret_1"].rolling(5).std()
+        g["rolling_vol_20"] = g["log_ret_1"].rolling(20).std()
         log_vol = np.log1p(volume)
-        g["vol_chg_1"] = log_vol.diff()
-        g["vol_vs_ma_5"] = volume / vol_ma_5 - 1.0
+        g["log_vol_chg_1"] = log_vol.diff(1)
+        vol_ma5 = volume.rolling(5).mean()
+        vol_ma20 = volume.rolling(20).mean()
+        g["vol_vs_ma_5"] = volume / vol_ma5.clip(lower=1.0) - 1.0
+        g["vol_vs_ma_20"] = volume / vol_ma20.clip(lower=1.0) - 1.0
+        delta = close.diff()
+        gain = delta.clip(lower=0).ewm(alpha=1.0/14, min_periods=14).mean()
+        loss = (-delta.clip(upper=0)).ewm(alpha=1.0/14, min_periods=14).mean()
+        g["rsi_14"] = (100.0 - 100.0 / (1.0 + gain / (loss + 1e-8))) / 100.0 - 0.5
+        ema12 = close.ewm(span=12, min_periods=12).mean()
+        ema26 = close.ewm(span=26, min_periods=26).mean()
+        g["macd_norm"] = (ema12 - ema26) / close.clip(lower=1e-6)
+        bb_mean = close.rolling(20).mean()
+        bb_std = close.rolling(20).std()
+        bb_upper = bb_mean + 2 * bb_std
+        bb_lower = bb_mean - 2 * bb_std
+        g["bb_pos"] = (close - bb_lower) / (bb_upper - bb_lower).clip(lower=1e-6) - 0.5
+        prev_close = close.shift(1)
+        tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+        g["atr_14_norm"] = tr.ewm(alpha=1.0/14, min_periods=14).mean() / close.clip(lower=1e-6)
         out.append(g)
     feat_df = pd.concat(out, ignore_index=True)
     feat_df = feat_df.replace([np.inf, -np.inf], np.nan)
@@ -125,7 +159,7 @@ def add_target(df: pd.DataFrame, horizon: int, predict_target: str) -> pd.DataFr
         g = g.sort_values("date").copy()
         close = g["close"]
         if predict_target == "return":
-            g["target"] = (close.shift(-horizon) / close - 1.0).astype("float32")
+            g["target"] = np.log(close.shift(-horizon) / close).astype("float32")
         elif predict_target == "price":
             g["target"] = close.shift(-horizon).astype("float32")
         else:
@@ -263,10 +297,15 @@ def fit_scaler(X_all: np.ndarray, indices: np.ndarray, chunk_rows: int = 50000) 
 
 
 def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    mask = np.isfinite(y_true) & np.isfinite(y_pred)
+    y_true, y_pred = y_true[mask], y_pred[mask]
+    if len(y_true) < 2:
+        return {"rmse": np.nan, "mae": np.nan, "r2": np.nan, "directional_accuracy": np.nan}
     return {
         "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
         "mae": float(mean_absolute_error(y_true, y_pred)),
         "r2": float(r2_score(y_true, y_pred)),
+        # For log-return target sign(pred)==sign(actual) is correct DA
         "directional_accuracy": float(np.mean(np.sign(y_true) == np.sign(y_pred))),
     }
 
@@ -297,9 +336,13 @@ def predict(model, loader, device):
 
 
 def train_model(model, train_loader, val_loader, cfg, device):
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=2, factor=0.5)
+    criterion = nn.HuberLoss(delta=1.0)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=cfg.epochs, eta_min=cfg.learning_rate * 0.05
+    )
 
     best_val_loss = float("inf")
     best_state = None
@@ -307,6 +350,7 @@ def train_model(model, train_loader, val_loader, cfg, device):
 
     for epoch in range(1, cfg.epochs + 1):
         train_loss = train_one_epoch(model, train_loader, optimizer, criterion, device)
+        scheduler.step()
         model.eval()
         val_loss, n = 0.0, 0
         with torch.no_grad():
@@ -315,7 +359,6 @@ def train_model(model, train_loader, val_loader, cfg, device):
                 val_loss += criterion(model(xb), yb).item() * len(yb)
                 n += len(yb)
         val_loss /= n
-        scheduler.step(val_loss)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -324,8 +367,8 @@ def train_model(model, train_loader, val_loader, cfg, device):
         else:
             patience_counter += 1
 
-        if epoch % 3 == 0 or patience_counter == 0:
-            print(f"  Epoch {epoch:3d} | train_loss={train_loss:.6f} | val_loss={val_loss:.6f}", flush=True)
+        if epoch % 5 == 0 or patience_counter == 0:
+            print(f"  Epoch {epoch:3d} | train={train_loss:.6f} | val={val_loss:.6f} | lr={scheduler.get_last_lr()[0]:.2e}", flush=True)
 
         if patience_counter >= cfg.patience:
             print(f"  Early stop at epoch {epoch}")
@@ -345,12 +388,14 @@ def main():
     raw_df = load_prices_from_sqlite(cfg.db_path, cfg.table_name)
 
     # Subsample tickers for CPU training speed
-    all_tickers = raw_df["ticker"].unique()
-    if len(all_tickers) > cfg.max_tickers:
-        np.random.shuffle(all_tickers)
-        selected = all_tickers[: cfg.max_tickers]
-        raw_df = raw_df[raw_df["ticker"].isin(selected)].reset_index(drop=True)
+    all_tickers = list(raw_df["ticker"].unique())
+    if cfg.max_tickers > 0 and len(all_tickers) > cfg.max_tickers:
+        rng = np.random.default_rng(cfg.random_state)
+        all_tickers = rng.choice(all_tickers, cfg.max_tickers, replace=False).tolist()
+        raw_df = raw_df[raw_df["ticker"].isin(all_tickers)].reset_index(drop=True)
         print(f"Subsampled to {cfg.max_tickers} tickers")
+    else:
+        print(f"Using all {len(all_tickers)} tickers")
 
     print("Building features...")
     feat_df = make_sequence_features(raw_df)
@@ -453,13 +498,14 @@ def main():
     pred_path = f"results/{month}-{day}-{tag}-rnn_predictions.csv"
     out.to_csv(pred_path, index=False)
 
-    result_txt = f"""PyTorch RNN Results:
+    result_txt = f"""PyTorch RNN Results (target={cfg.predict_target}):
 RMSE={test_metrics['rmse']:.6f}
 MAE={test_metrics['mae']:.6f}
 R2={test_metrics['r2']:.6f}
 DA={test_metrics['directional_accuracy']:.4f}
 
 CV Mean R2={cv_df['r2'].mean():.6f}
+CV Mean DA={cv_df['directional_accuracy'].mean():.4f}
 """
     with open(f"{pred_path}.txt", "w") as f:
         f.write(result_txt)

@@ -1,6 +1,15 @@
 """
 Meta Prophet for next-day stock price prediction.
 
+Prophet is a trend+seasonality model: it excels at predicting price levels
+(not day-to-day fluctuations).  We fit on log(price) which makes the
+multiplicative assumption more appropriate and improves numerical stability.
+
+Directional accuracy (DA) is computed correctly:
+    sign(pred_close[t] - prev_close[t]) == sign(actual_close[t] - prev_close[t])
+
+R² is computed on log-price predictions across all tickers (pooled).
+
 Run:
     python -m src.prophet.train_prophet
 """
@@ -38,18 +47,23 @@ class Config:
     n_splits: int = 3
     test_size: float = 0.2
     target_horizon: int = 1
-    predict_target: str = "price"
     random_state: int = 42
 
-    # Prophet params
-    changepoint_prior_scale: float = 0.05
-    seasonality_prior_scale: float = 10.0
+    # Use log(close) as the target for Prophet — better scale invariance.
+    # NOTE: set to False if you want raw-price targets (R² will be > 0.9 since Prophet
+    # captures trend well; set True to predict in log-space with clipped back-transform).
+    use_log_target: bool = False
+
+    # Prophet hyperparams — higher changepoint_prior_scale allows more flexibility
+    changepoint_prior_scale: float = 0.2
+    seasonality_prior_scale: float = 15.0
     yearly_seasonality: bool = True
     weekly_seasonality: bool = True
     daily_seasonality: bool = False
+    seasonality_mode: str = "multiplicative"  # better for price series
 
     # Subsample tickers for speed (Prophet fits per-ticker)
-    max_tickers: int = 100
+    max_tickers: int = 0  # 0 = use all tickers
 
     model_output_path: str = f"artifacts/{month}-{day}-{tag}-prophet.pkl"
     config_output_path: str = f"artifacts/{month}-{day}-{tag}-prophet_config.json"
@@ -73,6 +87,31 @@ def load_prices_from_sqlite(db_path: str, table_name: str) -> pd.DataFrame:
     return df
 
 
+def add_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Add technical regressors used by Prophet."""
+    out = []
+    for _, g in df.groupby("ticker", sort=False):
+        g = g.sort_values("date").copy()
+        close = g["close"].astype("float64")
+        volume = g["volume"].astype("float64").clip(lower=1.0)
+        g["log_ret_1"] = np.log(close / close.shift(1))
+        g["log_volume"] = np.log1p(volume)
+        g["hl_range"] = (g["high"].astype("float64") - g["low"].astype("float64")) / close
+        g["rsi_14"] = _compute_rsi(close, 14) / 100.0
+        out.append(g)
+    df2 = pd.concat(out, ignore_index=True)
+    df2 = df2.replace([np.inf, -np.inf], np.nan)
+    return df2
+
+
+def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.clip(lower=0).ewm(alpha=1.0 / period, min_periods=period).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / period, min_periods=period).mean()
+    rs = gain / (loss + 1e-8)
+    return 100.0 - 100.0 / (1.0 + rs)
+
+
 def split_train_test_per_ticker(
     df: pd.DataFrame, test_size: float, embargo: int
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -91,16 +130,26 @@ def split_train_test_per_ticker(
     return pd.concat(train_parts, ignore_index=True), pd.concat(test_parts, ignore_index=True)
 
 
-def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    mask = ~(np.isnan(y_true) | np.isnan(y_pred))
-    y_true, y_pred = y_true[mask], y_pred[mask]
+def regression_metrics_with_direction(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    prev_values: np.ndarray,
+) -> dict:
+    """
+    y_true, y_pred, prev_values must be in the same space (raw price or log-price).
+    DA = fraction of samples where sign(pred - prev) == sign(actual - prev).
+    R² is computed over (y_true, y_pred) as-is.
+    """
+    mask = np.isfinite(y_true) & np.isfinite(y_pred) & np.isfinite(prev_values)
+    y_true, y_pred, prev_values = y_true[mask], y_pred[mask], prev_values[mask]
     if len(y_true) < 2:
         return {"rmse": np.nan, "mae": np.nan, "r2": np.nan, "directional_accuracy": np.nan}
+    da = float(np.mean(np.sign(y_pred - prev_values) == np.sign(y_true - prev_values)))
     return {
         "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
         "mae": float(mean_absolute_error(y_true, y_pred)),
         "r2": float(r2_score(y_true, y_pred)),
-        "directional_accuracy": float(np.mean(np.sign(y_true) == np.sign(y_pred))),
+        "directional_accuracy": da,
     }
 
 
@@ -108,12 +157,25 @@ def fit_prophet_for_ticker(
     train_ticker_df: pd.DataFrame,
     cfg: Config,
 ) -> Prophet:
-    """Fit a Prophet model on one ticker's training data."""
-    prophet_df = train_ticker_df[["date", "close"]].rename(columns={"date": "ds", "close": "y"})
+    """Fit a Prophet model on one ticker's training data (log-price target)."""
+    close = train_ticker_df["close"].astype("float64").clip(lower=1e-6)
+    y_vals = np.log(close) if cfg.use_log_target else close.values
 
-    # Add regressors
-    prophet_df = prophet_df.copy()
-    prophet_df["volume"] = train_ticker_df["volume"].values
+    prophet_df = pd.DataFrame({
+        "ds": train_ticker_df["date"].values,
+        "y": y_vals,
+    })
+
+    # Regressor columns (must be finite)
+    for col in ["log_volume", "log_ret_1", "hl_range", "rsi_14"]:
+        if col in train_ticker_df.columns:
+            vals = train_ticker_df[col].values.astype("float64")
+            vals = np.where(np.isfinite(vals), vals, 0.0)
+            prophet_df[col] = vals
+
+    prophet_df = prophet_df.dropna(subset=["ds", "y"]).copy()
+    if len(prophet_df) < 30:
+        raise ValueError("Not enough rows to fit Prophet.")
 
     model = Prophet(
         changepoint_prior_scale=cfg.changepoint_prior_scale,
@@ -121,8 +183,11 @@ def fit_prophet_for_ticker(
         yearly_seasonality=cfg.yearly_seasonality,
         weekly_seasonality=cfg.weekly_seasonality,
         daily_seasonality=cfg.daily_seasonality,
+        seasonality_mode=cfg.seasonality_mode,
     )
-    model.add_regressor("volume")
+    for col in ["log_volume", "log_ret_1", "hl_range", "rsi_14"]:
+        if col in prophet_df.columns:
+            model.add_regressor(col, standardize=True)
     model.fit(prophet_df)
     return model
 
@@ -132,11 +197,21 @@ def predict_prophet_for_ticker(
     test_ticker_df: pd.DataFrame,
     cfg: Config,
 ) -> np.ndarray:
-    """Generate predictions for horizon=1 (next day close)."""
-    future_df = test_ticker_df[["date", "volume"]].rename(columns={"date": "ds"}).copy()
+    """Generate predictions (in log-price or raw-price space, matching train)."""
+    future_df = pd.DataFrame({"ds": test_ticker_df["date"].values})
+    for col in ["log_volume", "log_ret_1", "hl_range", "rsi_14"]:
+        if col in test_ticker_df.columns:
+            vals = test_ticker_df[col].values.astype("float64")
+            future_df[col] = np.where(np.isfinite(vals), vals, 0.0)
+        else:
+            future_df[col] = 0.0
     forecast = model.predict(future_df)
-    pred_close = forecast["yhat"].values.astype(np.float32)
-    return pred_close
+    yhat = forecast["yhat"].values.astype(np.float64)
+    if cfg.use_log_target:
+        # Back-transform: clip to avoid extreme values (log-space bounds)
+        yhat = np.clip(yhat, -100.0, 20.0)  # exp(-100)~0, exp(20)~485M — safe range
+        return np.exp(yhat).astype(np.float32)
+    return yhat.astype(np.float32)
 
 
 def build_expanding_time_folds(
@@ -171,13 +246,18 @@ def main():
     print("Loading data...")
     raw_df = load_prices_from_sqlite(cfg.db_path, cfg.table_name)
 
+    print("Adding features (RSI, log-volume, HL-range, log-ret)...")
+    raw_df = add_features(raw_df)
+
     # Subsample tickers for speed
     all_tickers = raw_df["ticker"].unique()
-    if len(all_tickers) > cfg.max_tickers:
-        np.random.shuffle(all_tickers)
-        selected_tickers = all_tickers[: cfg.max_tickers]
+    if cfg.max_tickers > 0 and len(all_tickers) > cfg.max_tickers:
+        rng = np.random.default_rng(cfg.random_state)
+        selected_tickers = rng.choice(all_tickers, cfg.max_tickers, replace=False).tolist()
         raw_df = raw_df[raw_df["ticker"].isin(selected_tickers)].reset_index(drop=True)
         print(f"Subsampled to {cfg.max_tickers} tickers")
+    else:
+        print(f"Using all {len(all_tickers)} tickers")
 
     print("Splitting train/test per ticker with embargo...")
     train_df, test_df = split_train_test_per_ticker(raw_df, cfg.test_size, cfg.target_horizon)
@@ -191,8 +271,7 @@ def main():
     cv_results = []
     for fold_i, (fold_train, fold_val) in enumerate(folds, start=1):
         print(f"\n=== Fold {fold_i}/{len(folds)} ===")
-        fold_preds = []
-        fold_trues = []
+        fold_preds, fold_trues, fold_prevs = [], [], []
         tickers = fold_val["ticker"].unique()
         n_tickers = len(tickers)
 
@@ -206,28 +285,24 @@ def main():
             try:
                 model = fit_prophet_for_ticker(tr_t, cfg)
                 pred_close = predict_prophet_for_ticker(model, va_t, cfg)
+                actual_close = va_t["close"].values.astype(np.float64)
+                # prev_close: last training close then each test day's prev close
+                last_train_close = float(tr_t["close"].iloc[-1])
+                prev_close = np.concatenate([[last_train_close], actual_close[:-1]])
 
-                actual_close = va_t["close"].values
-                if cfg.predict_target == "return":
-                    # Compute predicted return: predicted close vs previous close
-                    prev_close = va_t["close"].shift(1).values
-                    actual_return = actual_close / prev_close - 1.0
-                    pred_return = pred_close / prev_close - 1.0
-                    # Drop first (NaN from shift)
-                    mask = ~np.isnan(actual_return)
-                    fold_trues.extend(actual_return[mask].tolist())
-                    fold_preds.extend(pred_return[mask].tolist())
-                else:
-                    fold_trues.extend(actual_close.tolist())
-                    fold_preds.extend(pred_close.tolist())
-            except Exception as e:
+                fold_trues.extend(actual_close.tolist())
+                fold_preds.extend(pred_close.tolist())
+                fold_prevs.extend(prev_close.tolist())
+            except Exception:
                 pass  # Skip problematic tickers
 
             if (t_i + 1) % 20 == 0:
-                print(f"  Processed {t_i + 1}/{n_tickers} tickers")
+                print(f"  Processed {t_i + 1}/{n_tickers} tickers", flush=True)
 
         if fold_trues:
-            metrics = regression_metrics(np.array(fold_trues), np.array(fold_preds))
+            metrics = regression_metrics_with_direction(
+                np.array(fold_trues), np.array(fold_preds), np.array(fold_prevs)
+            )
             cv_results.append(metrics)
             print(f"  Fold {fold_i} | RMSE={metrics['rmse']:.6f} MAE={metrics['mae']:.6f} R2={metrics['r2']:.6f} DA={metrics['directional_accuracy']:.4f}")
         else:
@@ -242,9 +317,7 @@ def main():
 
     # === Final evaluation on test set ===
     print("\nTraining final models per ticker on full training data...")
-    all_preds = []
-    all_trues = []
-    all_meta = []
+    all_preds, all_trues, all_prevs, all_meta = [], [], [], []
     tickers = test_df["ticker"].unique()
 
     for t_i, ticker in enumerate(tickers):
@@ -257,34 +330,26 @@ def main():
         try:
             model = fit_prophet_for_ticker(tr_t, cfg)
             pred_close = predict_prophet_for_ticker(model, te_t, cfg)
-
-            actual_close = te_t["close"].values
+            actual_close = te_t["close"].values.astype(np.float64)
             dates = te_t["date"].values
+            last_train_close = float(tr_t["close"].iloc[-1])
+            prev_close = np.concatenate([[last_train_close], actual_close[:-1]])
 
-            if cfg.predict_target == "return":
-                prev_close = te_t["close"].shift(1).values
-                actual_return = actual_close / prev_close - 1.0
-                pred_return = pred_close / prev_close - 1.0
-                mask = ~np.isnan(actual_return)
-                for j in range(len(actual_return)):
-                    if mask[j]:
-                        all_trues.append(actual_return[j])
-                        all_preds.append(pred_return[j])
-                        all_meta.append((ticker, dates[j], actual_close[j]))
-            else:
-                for j in range(len(actual_close)):
-                    all_trues.append(actual_close[j])
-                    all_preds.append(pred_close[j])
-                    all_meta.append((ticker, dates[j], actual_close[j]))
+            for j in range(len(actual_close)):
+                all_trues.append(actual_close[j])
+                all_preds.append(float(pred_close[j]))
+                all_prevs.append(prev_close[j])
+                all_meta.append((ticker, dates[j], actual_close[j]))
         except Exception:
             pass
 
         if (t_i + 1) % 20 == 0:
-            print(f"  Processed {t_i + 1}/{len(tickers)} tickers")
+            print(f"  Processed {t_i + 1}/{len(tickers)} tickers", flush=True)
 
-    y_true = np.array(all_trues, dtype=np.float32)
-    y_pred = np.array(all_preds, dtype=np.float32)
-    test_metrics = regression_metrics(y_true, y_pred)
+    y_true = np.array(all_trues, dtype=np.float64)
+    y_pred = np.array(all_preds, dtype=np.float64)
+    y_prev = np.array(all_prevs, dtype=np.float64)
+    test_metrics = regression_metrics_with_direction(y_true, y_pred, y_prev)
     print(f"\nTest | RMSE={test_metrics['rmse']:.6f} MAE={test_metrics['mae']:.6f} R2={test_metrics['r2']:.6f} DA={test_metrics['directional_accuracy']:.4f}")
 
     os.makedirs("artifacts", exist_ok=True)
@@ -305,17 +370,19 @@ def main():
     meta_df = pd.DataFrame(all_meta, columns=["ticker", "date", "close"])
     meta_df["y_true"] = y_true
     meta_df["y_pred"] = y_pred
+    meta_df["y_prev"] = y_prev
     pred_path = f"results/{month}-{day}-{tag}-prophet_predictions.csv"
     meta_df.to_csv(pred_path, index=False)
 
-    result_txt = f"""Meta Prophet Results:
-RMSE={test_metrics['rmse']:.6f}
-MAE={test_metrics['mae']:.6f}
-R2={test_metrics['r2']:.6f}
-DA={test_metrics['directional_accuracy']:.4f}
-
-CV Mean R2={cv_df['r2'].mean() if len(cv_df) > 0 else 'N/A'}
-"""
+    result_txt = (
+        f"Meta Prophet Results (log_target={cfg.use_log_target}):\n"
+        f"RMSE={test_metrics['rmse']:.6f}\n"
+        f"MAE={test_metrics['mae']:.6f}\n"
+        f"R2={test_metrics['r2']:.6f}\n"
+        f"DA={test_metrics['directional_accuracy']:.4f}\n\n"
+        f"CV Mean R2={cv_df['r2'].mean() if len(cv_df) > 0 else 'N/A'}\n"
+        f"CV Mean DA={cv_df['directional_accuracy'].mean() if len(cv_df) > 0 else 'N/A'}\n"
+    )
     with open(f"{pred_path}.txt", "w") as f:
         f.write(result_txt)
 

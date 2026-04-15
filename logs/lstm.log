@@ -1,0 +1,61 @@
+Loading data...
+Using all 1000 tickers
+Building features...
+Splitting train/test per ticker with embargo...
+Creating targets inside each split...
+Building train sequences...
+Train sequences: 3,268,336 | Tickers: 997
+Building test sequences...
+Test sequences : 807,930 | Tickers: 997
+Building grouped time-series CV folds...
+CV folds: 5
+
+=== Fold 1/5 ===
+  Train: 543,368 | Valid: 544,539
+  Epoch   1 | train=0.000693 | val=0.000453 | lr=5.00e-04
+  Epoch   5 | train=0.000576 | val=0.000458 | lr=4.92e-04
+  Epoch  10 | train=0.000528 | val=0.000466 | lr=4.68e-04
+  Early stop at epoch 11
+  Fold 1 | RMSE=0.030349 MAE=0.018591 R2=-0.004379 DA=0.4940
+
+=== Fold 2/5 ===
+  Train: 1,087,907 | Valid: 545,187
+  Epoch   1 | train=0.000559 | val=0.000272 | lr=5.00e-04
+  Epoch   3 | train=0.000520 | val=0.000272 | lr=4.97e-04
+  Epoch   5 | train=0.000504 | val=0.000274 | lr=4.92e-04
+  Epoch  10 | train=0.000464 | val=0.000272 | lr=4.68e-04
+  Early stop at epoch 13
+  Fold 2 | RMSE=0.023478 MAE=0.014189 R2=0.001014 DA=0.5130
+
+=== Fold 3/5 ===
+  Train: 1,633,094 | Valid: 544,468
+  Epoch   1 | train=0.000509 | val=0.000267 | lr=5.00e-04
+  Epoch   5 | train=0.000432 | val=0.000268 | lr=4.92e-04
+  Epoch   6 | train=0.000427 | val=0.000267 | lr=4.88e-04
+  Epoch   8 | train=0.000415 | val=0.000266 | lr=4.79e-04
+  Epoch  10 | train=0.000404 | val=0.000266 | lr=4.68e-04
+  Epoch  11 | train=0.000399 | val=0.000265 | lr=4.62e-04
+  Epoch  12 | train=0.000395 | val=0.000265 | lr=4.55e-04
+  Epoch  13 | train=0.000390 | val=0.000264 | lr=4.47e-04
+  Epoch  14 | train=0.000386 | val=0.000264 | lr=4.39e-04
+  Epoch  15 | train=0.000383 | val=0.000265 | lr=4.30e-04
+  Epoch  16 | train=0.000379 | val=0.000263 | lr=4.21e-04
+  Epoch  18 | train=0.000372 | val=0.000261 | lr=4.02e-04
+  Epoch  20 | train=0.000369 | val=0.000261 | lr=3.81e-04
+  Epoch  21 | train=0.000366 | val=0.000261 | lr=3.70e-04
+  Epoch  25 | train=0.000357 | val=0.000261 | lr=3.24e-04
+  Epoch  26 | train=0.000355 | val=0.000261 | lr=3.12e-04
+  Epoch  30 | train=0.000347 | val=0.000261 | lr=2.63e-04
+  Epoch  35 | train=0.000339 | val=0.000262 | lr=2.01e-04
+  Early stop at epoch 36
+  Fold 3 | RMSE=0.022836 MAE=0.014088 R2=0.022542 DA=0.5111
+
+=== Fold 4/5 ===
+  Train: 2,177,562 | Valid: 544,482
+  Epoch   1 | train=0.000436 | val=0.000264 | lr=5.00e-04
+  Epoch   3 | train=0.000395 | val=0.000264 | lr=4.97e-04
+  Epoch   4 | train=0.000392 | val=0.000263 | lr=4.95e-04
+  Epoch   5 | train=0.000387 | val=0.000261 | lr=4.92e-04
+  Epoch   6 | train=0.000381 | val=0.000260 | lr=4.88e-04
+  Epoch   7 | train=0.000376 | val=0.000260 | lr=4.84e-04
+  Epoch   9 | train=0.000366 | val=0.000259 | lr=4.74e-04

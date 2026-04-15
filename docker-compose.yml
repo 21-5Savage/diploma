@@ -1,0 +1,29 @@
+version: "3.9"
+
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stock_prediction_pipeline
+    restart: unless-stopped
+    environment:
+      - PIPELINE_DB=/app/pipeline/db/pipeline.db
+      - MODELS_DIR=/app/pipeline/models
+      - LOOKBACK=90
+      - RUN_ON_START=true
+      # Set your Gemini API key here for the LLM model:
+      # - GEMINI_API_KEY=your_key_here
+    volumes:
+      # Persist database, logs, and models outside the container
+      - ./pipeline/db:/app/pipeline/db
+      - ./pipeline/models:/app/pipeline/models
+      - ./pipeline/results:/app/pipeline/results
+      - ./logs:/app/logs
+      # Mount trained artifacts so they're available without rebuilding
+      - ./artifacts:/app/artifacts
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
