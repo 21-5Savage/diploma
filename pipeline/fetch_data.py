@@ -1,8 +1,4 @@
 """
-Fetch latest OHLCV data from yfinance for the configured tickers.
-Saves data to the pipeline SQLite database.
-
-Usage:
     python -m pipeline.fetch_data
     python -m pipeline.fetch_data --tickers AAPL MSFT GOOGL --lookback 90
 """
@@ -106,14 +102,34 @@ def fetch_ticker(ticker: str, start: str, end: str, retries: int = 3) -> pd.Data
 
 def upsert_prices(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
     rows = df[["ticker", "date", "open", "high", "low", "close", "volume"]].values.tolist()
-    conn.executemany(
-        """INSERT INTO prices (ticker, date, open, high, low, close, volume)
-           VALUES (?,?,?,?,?,?,?)
-           ON CONFLICT(ticker, date) DO UPDATE SET
-               open=excluded.open, high=excluded.high, low=excluded.low,
-               close=excluded.close, volume=excluded.volume""",
-        rows,
-    )
+    try:
+        conn.executemany(
+            """INSERT INTO prices (ticker, date, open, high, low, close, volume)
+               VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(ticker, date) DO UPDATE SET
+                   open=excluded.open, high=excluded.high, low=excluded.low,
+                   close=excluded.close, volume=excluded.volume""",
+            rows,
+        )
+    except sqlite3.OperationalError as exc:
+        # Older DBs in this repo have an index on (ticker, date) but no UNIQUE
+        # constraint, so SQLite rejects ON CONFLICT. Fall back to update-then-insert.
+        if "ON CONFLICT clause does not match" not in str(exc):
+            raise
+        conn.executemany(
+            """UPDATE prices
+               SET open=?, high=?, low=?, close=?, volume=?
+               WHERE ticker=? AND date=?""",
+            [[r[2], r[3], r[4], r[5], r[6], r[0], r[1]] for r in rows],
+        )
+        conn.executemany(
+            """INSERT INTO prices (ticker, date, open, high, low, close, volume)
+               SELECT ?,?,?,?,?,?,?
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM prices WHERE ticker=? AND date=?
+               )""",
+            [[r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[0], r[1]] for r in rows],
+        )
     return len(rows)
 
 

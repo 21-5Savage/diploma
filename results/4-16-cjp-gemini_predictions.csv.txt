@@ -1,0 +1,13 @@
+Gemini 2.5 Flash Stock Prediction Results:
+Model: gemini-2.5-flash
+Tickers: 30
+Context days: 60
+
+Overall:
+  RMSE=1184.7474
+  MAE=475.0555
+  R2=-394.3130
+  DA=0.4749
+  n=300
+
+CV Mean R2=N/A

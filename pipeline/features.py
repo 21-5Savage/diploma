@@ -1,7 +1,3 @@
-"""
-Shared feature engineering for the real-time pipeline.
-Used by both training scripts and the pipeline predict step.
-"""
 
 import numpy as np
 import pandas as pd

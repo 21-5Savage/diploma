@@ -1,0 +1,8 @@
+Decision Tree Results (target=return):
+RMSE=0.027132
+MAE=0.017474
+R2=-0.007677
+DA=0.5045
+
+CV Mean R2=-0.010993
+CV Mean DA=0.5103

@@ -1,13 +1,13 @@
 """
-XGBoost gradient-boosted decision tree for next-day stock return prediction.
+Simple decision tree regressor for next-day stock return prediction.
 
 Target  : log(close_t+1 / close_t)  — log return
 Metrics : R², RMSE, MAE, Directional Accuracy
           DA = sign(pred_return) == sign(actual_return)
 
-Features are the same rich technical-indicator set used by LSTM/RNN
-but flattened into a single vector (no sequences needed for tree models).
-We include rolling statistics over a lookback window as separate features.
+This trainer intentionally uses the shared `pipeline.features` feature set so
+the control tree does not get a richer handcrafted-feature advantage over the
+sequence models.
 
 Run:
     python -m src.tree.train_tree
@@ -23,8 +23,9 @@ from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
-import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.tree import DecisionTreeRegressor
+from pipeline.features import FEATURE_COLS, make_features_df
 
 import datetime
 import random
@@ -48,21 +49,17 @@ class Config:
     target_horizon: int = 1
     random_state: int = 42
 
-    # XGBoost hyperparams
-    n_estimators: int = 1000
-    learning_rate: float = 0.03
-    max_depth: int = 6
-    min_child_weight: int = 50
-    subsample: float = 0.8
-    colsample_bytree: float = 0.8
-    reg_alpha: float = 0.1
-    reg_lambda: float = 1.0
-    early_stopping_rounds: int = 50
+    # Decision tree control-model hyperparams
+    max_depth: int = 8
+    min_samples_leaf: int = 100
+    min_samples_split: int = 400
 
     max_tickers: int = 0  # 0 = use all tickers
+    max_train_rows_per_ticker: int = 500
+    max_test_rows_per_ticker: int = 120
 
-    model_output_path: str = f"artifacts/{month}-{day}-{tag}-xgb_tree.pkl"
-    config_output_path: str = f"artifacts/{month}-{day}-{tag}-xgb_tree_config.json"
+    model_output_path: str = f"artifacts/{month}-{day}-{tag}-decision_tree.pkl"
+    config_output_path: str = f"artifacts/{month}-{day}-{tag}-decision_tree_config.json"
 
 
 def load_prices_from_sqlite(db_path: str, table_name: str) -> pd.DataFrame:
@@ -82,97 +79,13 @@ def load_prices_from_sqlite(db_path: str, table_name: str) -> pd.DataFrame:
     return df
 
 
-def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    delta = series.diff()
-    gain = delta.clip(lower=0).ewm(alpha=1.0 / period, min_periods=period).mean()
-    loss = (-delta.clip(upper=0)).ewm(alpha=1.0 / period, min_periods=period).mean()
-    return (100.0 - 100.0 / (1.0 + gain / (loss + 1e-8))) / 100.0 - 0.5
-
-
 def make_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute point-in-time features for each row (no look-ahead)."""
-    out = []
-    for _, g in df.groupby("ticker", sort=False):
-        g = g.sort_values("date").copy()
-        close = g["close"]
-        high = g["high"]
-        low = g["low"]
-        open_ = g["open"]
-        volume = g["volume"].clip(lower=1.0)
-
-        log_c = np.log(close)
-        g["log_ret_1"] = log_c.diff(1)
-        g["log_ret_3"] = log_c.diff(3)
-        g["log_ret_5"] = log_c.diff(5)
-        g["log_ret_10"] = log_c.diff(10)
-        g["log_ret_20"] = log_c.diff(20)
-        g["log_ret_60"] = log_c.diff(60)
-
-        g["hl_range"] = (high - low) / close
-        g["oc_change"] = (close - open_) / open_.clip(lower=1e-6)
-
-        for d in [5, 10, 20, 50, 200]:
-            ma = close.rolling(d).mean()
-            g[f"close_vs_ma_{d}"] = close / ma.clip(lower=1e-6) - 1.0
-
-        g["ma_5_vs_20"] = close.rolling(5).mean() / close.rolling(20).mean().clip(lower=1e-6) - 1.0
-        g["ma_20_vs_50"] = close.rolling(20).mean() / close.rolling(50).mean().clip(lower=1e-6) - 1.0
-
-        for d in [5, 10, 20]:
-            g[f"rolling_vol_{d}"] = g["log_ret_1"].rolling(d).std()
-        g["vol_of_vol_20"] = g["rolling_vol_5"].rolling(20).std()
-
-        log_vol = np.log1p(volume)
-        g["log_vol_chg_1"] = log_vol.diff(1)
-        g["log_vol_chg_5"] = log_vol.diff(5)
-        for d in [5, 20]:
-            g[f"vol_vs_ma_{d}"] = volume / volume.rolling(d).mean().clip(lower=1.0) - 1.0
-
-        g["rsi_14"] = _compute_rsi(close, 14)
-        g["rsi_7"] = _compute_rsi(close, 7)
-
-        ema12 = close.ewm(span=12, min_periods=12).mean()
-        ema26 = close.ewm(span=26, min_periods=26).mean()
-        macd = ema12 - ema26
-        g["macd_norm"] = macd / close.clip(lower=1e-6)
-        g["macd_signal_norm"] = macd.ewm(span=9, min_periods=9).mean() / close.clip(lower=1e-6)
-
-        bb_mean = close.rolling(20).mean()
-        bb_std = close.rolling(20).std()
-        g["bb_pos"] = (close - (bb_mean - 2 * bb_std)) / (4 * bb_std).clip(lower=1e-6) - 0.5
-        g["bb_width"] = 4 * bb_std / bb_mean.clip(lower=1e-6)
-
-        prev_c = close.shift(1)
-        tr = pd.concat([high - low, (high - prev_c).abs(), (low - prev_c).abs()], axis=1).max(axis=1)
-        g["atr_14_norm"] = tr.ewm(alpha=1.0 / 14, min_periods=14).mean() / close.clip(lower=1e-6)
-
-        # Rolling skew and kurtosis of returns
-        g["skew_20"] = g["log_ret_1"].rolling(20).skew()
-        g["kurt_20"] = g["log_ret_1"].rolling(20).kurt()
-
-        # Target: log-return at horizon
-        g["target"] = np.log(close.shift(-1) / close)
-
-        out.append(g)
-
-    result = pd.concat(out, ignore_index=True)
-    result = result.replace([np.inf, -np.inf], np.nan)
-    return result
-
-
-FEATURE_COLS = [
-    "log_ret_1", "log_ret_3", "log_ret_5", "log_ret_10", "log_ret_20", "log_ret_60",
-    "hl_range", "oc_change",
-    "close_vs_ma_5", "close_vs_ma_10", "close_vs_ma_20", "close_vs_ma_50", "close_vs_ma_200",
-    "ma_5_vs_20", "ma_20_vs_50",
-    "rolling_vol_5", "rolling_vol_10", "rolling_vol_20", "vol_of_vol_20",
-    "log_vol_chg_1", "log_vol_chg_5", "vol_vs_ma_5", "vol_vs_ma_20",
-    "rsi_14", "rsi_7",
-    "macd_norm", "macd_signal_norm",
-    "bb_pos", "bb_width",
-    "atr_14_norm",
-    "skew_20", "kurt_20",
-]
+    """Compute the shared point-in-time feature set plus the tree target."""
+    feat_df = make_features_df(df).copy()
+    feat_df["target"] = np.log(
+        feat_df.groupby("ticker", sort=False)["close"].shift(-1) / feat_df["close"]
+    )
+    return feat_df.replace([np.inf, -np.inf], np.nan)
 
 
 def split_train_test_per_ticker(
@@ -234,6 +147,15 @@ def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     }
 
 
+def trim_recent_rows_per_ticker(df: pd.DataFrame, max_rows_per_ticker: int) -> pd.DataFrame:
+    if max_rows_per_ticker <= 0:
+        return df
+    parts = []
+    for _, grp in df.groupby("ticker", sort=False):
+        parts.append(grp.sort_values("date").tail(max_rows_per_ticker).copy())
+    return pd.concat(parts, ignore_index=True) if parts else df
+
+
 def main():
     cfg = Config()
     np.random.seed(cfg.random_state)
@@ -261,6 +183,8 @@ def main():
     feature_cols = [c for c in FEATURE_COLS if c in train_df.columns]
     train_clean = train_df[feature_cols + ["target", "ticker", "date", "close"]].dropna().copy()
     test_clean = test_df[feature_cols + ["target", "ticker", "date", "close"]].dropna().copy()
+    train_clean = trim_recent_rows_per_ticker(train_clean, cfg.max_train_rows_per_ticker)
+    test_clean = trim_recent_rows_per_ticker(test_clean, cfg.max_test_rows_per_ticker)
     print(f"Train (no-NaN): {len(train_clean):,} | Test (no-NaN): {len(test_clean):,}")
 
     X_train = train_clean[feature_cols].values.astype(np.float32)
@@ -281,26 +205,13 @@ def main():
         y_va = y_train[va_idx]
         print(f"  Train: {len(X_tr):,} | Val: {len(X_va):,}")
 
-        model = xgb.XGBRegressor(
-            n_estimators=cfg.n_estimators,
-            learning_rate=cfg.learning_rate,
+        model = DecisionTreeRegressor(
             max_depth=cfg.max_depth,
-            min_child_weight=cfg.min_child_weight,
-            subsample=cfg.subsample,
-            colsample_bytree=cfg.colsample_bytree,
-            reg_alpha=cfg.reg_alpha,
-            reg_lambda=cfg.reg_lambda,
-            early_stopping_rounds=cfg.early_stopping_rounds,
-            eval_metric="rmse",
+            min_samples_leaf=cfg.min_samples_leaf,
+            min_samples_split=cfg.min_samples_split,
             random_state=cfg.random_state,
-            n_jobs=-1,
-            verbosity=0,
         )
-        model.fit(
-            X_tr, y_tr,
-            eval_set=[(X_va, y_va)],
-            verbose=100,
-        )
+        model.fit(X_tr, y_tr)
         y_va_pred = model.predict(X_va)
         metrics = regression_metrics(y_va, y_va_pred)
         cv_results.append(metrics)
@@ -311,28 +222,13 @@ def main():
     print(cv_df.mean(numeric_only=True).to_string())
 
     print("\nTraining final model on all training data...")
-    n_train = len(X_train)
-    split = int(n_train * 0.9)
-    final_model = xgb.XGBRegressor(
-        n_estimators=cfg.n_estimators,
-        learning_rate=cfg.learning_rate,
+    final_model = DecisionTreeRegressor(
         max_depth=cfg.max_depth,
-        min_child_weight=cfg.min_child_weight,
-        subsample=cfg.subsample,
-        colsample_bytree=cfg.colsample_bytree,
-        reg_alpha=cfg.reg_alpha,
-        reg_lambda=cfg.reg_lambda,
-        early_stopping_rounds=cfg.early_stopping_rounds,
-        eval_metric="rmse",
+        min_samples_leaf=cfg.min_samples_leaf,
+        min_samples_split=cfg.min_samples_split,
         random_state=cfg.random_state,
-        n_jobs=-1,
-        verbosity=0,
     )
-    final_model.fit(
-        X_train[:split], y_train[:split],
-        eval_set=[(X_train[split:], y_train[split:])],
-        verbose=200,
-    )
+    final_model.fit(X_train, y_train)
 
     print("\nEvaluating on held-out test set...")
     y_test_pred = final_model.predict(X_test)
@@ -359,11 +255,11 @@ def main():
     out_df = test_clean[["ticker", "date", "close"]].copy()
     out_df["y_true"] = y_test
     out_df["y_pred"] = y_test_pred
-    pred_path = f"results/{month}-{day}-{tag}-xgb_tree_predictions.csv"
+    pred_path = f"results/{month}-{day}-{tag}-decision_tree_predictions.csv"
     out_df.to_csv(pred_path, index=False)
 
     result_txt = (
-        f"XGBoost Decision Tree Results (target=return):\n"
+        f"Decision Tree Results (target=return):\n"
         f"RMSE={test_metrics['rmse']:.6f}\n"
         f"MAE={test_metrics['mae']:.6f}\n"
         f"R2={test_metrics['r2']:.6f}\n"
@@ -377,10 +273,7 @@ def main():
     print(f"\nSaved model   : {cfg.model_output_path}")
     print(f"Saved results : {pred_path}")
 
-    # Feature importance top-20
-    importances = pd.Series(
-        final_model.feature_importances_, index=feature_cols
-    ).sort_values(ascending=False)
+    importances = pd.Series(final_model.feature_importances_, index=feature_cols).sort_values(ascending=False)
     print("\nTop-20 feature importances:")
     print(importances.head(20).to_string())
 
