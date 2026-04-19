@@ -20,7 +20,8 @@ DB_PATH = Path("dataset/stock_prices_20y.db")
 TICKERS_CSV = Path(f"pipeline/results/sampled_pipeline_tickers_{SLUG}.csv")
 LSTM_MODEL_PKL = Path("artifacts/lstm/models/20260415_140411-lstm_torch.pkl")
 TREE_MODEL_PKL = Path("artifacts/4-16-mnu-decision_tree.pkl")
-RNN_ROWS_CSV = Path(f"pipeline/results/sampled_rnn_{SLUG}_rows.csv")
+RNN_ROWS_CSV     = Path(f"pipeline/results/sampled_rnn_{SLUG}_rows.csv")
+PROPHET_ROWS_CSV = Path(f"pipeline/results/sampled_prophet_{SLUG}_rows.csv")
 
 RESULTS_DIR = Path("pipeline/results")
 LSTM_ROWS_CSV = RESULTS_DIR / f"sampled_lstm_{SLUG}_rows.csv"
@@ -32,13 +33,14 @@ PLOTS_DIR = RESULTS_DIR / "plots"
 DAILY_WINNERS_PLOT = PLOTS_DIR / f"shared_sample_daily_winners_{SLUG}.png"
 
 DEVICE = torch.device("cpu")
-SHARED_MODEL_ORDER = ["tree", "lstm", "rnn"]
-DAILY_MODEL_ORDER = ["tree", "lstm", "rnn", "llm"]
+SHARED_MODEL_ORDER = ["tree", "lstm", "rnn", "prophet"]
+DAILY_MODEL_ORDER = ["tree", "lstm", "rnn", "llm", "prophet"]
 MODEL_COLORS = {
-    "tree": "#e07b39",
-    "lstm": "#3a7ebf",
-    "rnn": "#9b59b6",
-    "llm": "#48a868",
+    "tree":    "#e07b39",
+    "lstm":    "#3a7ebf",
+    "rnn":     "#9b59b6",
+    "llm":     "#48a868",
+    "prophet": "#c0392b",
 }
 
 
@@ -367,12 +369,15 @@ def main() -> None:
     tree_rows.to_csv(TREE_ROWS_CSV, index=False)
     print(f"Saved {TREE_ROWS_CSV}")
 
-    rnn_rows = pd.read_csv(RNN_ROWS_CSV)
-    common_tickers = set(tree_rows["ticker"]) & set(lstm_rows["ticker"]) & set(rnn_rows["ticker"])
-    common_dates = set(tree_rows["pred_date"]) & set(lstm_rows["pred_date"]) & set(rnn_rows["pred_date"])
+    rnn_rows     = pd.read_csv(RNN_ROWS_CSV)
+    prophet_rows = pd.read_csv(PROPHET_ROWS_CSV)
+    common_tickers = (set(tree_rows["ticker"]) & set(lstm_rows["ticker"])
+                      & set(rnn_rows["ticker"]) & set(prophet_rows["ticker"]))
+    common_dates = (set(tree_rows["pred_date"]) & set(lstm_rows["pred_date"])
+                    & set(rnn_rows["pred_date"]) & set(prophet_rows["pred_date"]))
 
     frames = []
-    for df in [tree_rows, lstm_rows, rnn_rows]:
+    for df in [tree_rows, lstm_rows, rnn_rows, prophet_rows]:
         frames.append(df[df["ticker"].isin(common_tickers) & df["pred_date"].isin(common_dates)].copy())
     combined = pd.concat(frames, ignore_index=True)
 
